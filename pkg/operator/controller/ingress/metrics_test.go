@@ -139,6 +139,100 @@ func Test_DeleteIngressControllerConditionsMetric(t *testing.T) {
 	}
 }
 
+func Test_SetIngressControllerConditionsMetric(t *testing.T) {
+
+	testCases := []struct {
+		name                 string
+		inputMetricValues    []metricValue // metrics which existed before the call
+		inputIngress         *operatorv1.IngressController
+		expectedMetricFormat string
+	}{
+		{
+			name: "Happy path use case",
+			inputMetricValues: []metricValue{
+				{
+					[]string{"test1", "Available"},
+					1.0,
+				},
+				{
+					[]string{"test1", "Degraded"},
+					0.0,
+				},
+			},
+			inputIngress: testIngressControllerWithConditions("test1", []operatorv1.OperatorCondition{
+				{Type: "Available", Status: operatorv1.ConditionTrue},
+				{Type: "Degraded", Status: operatorv1.ConditionFalse},
+			}),
+			expectedMetricFormat: `
+            # HELP ingress_controller_conditions Report the conditions for ingress controllers. 0 is False and 1 is True.
+            # TYPE ingress_controller_conditions gauge
+            ingress_controller_conditions{condition="Available",name="test1"} 1
+            ingress_controller_conditions{condition="Degraded",name="test1"} 0
+            `,
+		},
+		{
+			name: "Not reported conditions (Progressing)",
+			inputMetricValues: []metricValue{
+				{
+					[]string{"test1", "Available"},
+					0.0,
+				},
+				{
+					[]string{"test1", "Degraded"},
+					1.0,
+				},
+			},
+			inputIngress: testIngressControllerWithConditions("test1", []operatorv1.OperatorCondition{
+				{Type: "Available", Status: operatorv1.ConditionFalse},
+				{Type: "Degraded", Status: operatorv1.ConditionTrue},
+				{Type: "Progressing", Status: operatorv1.ConditionTrue},
+			}),
+			expectedMetricFormat: `
+            # HELP ingress_controller_conditions Report the conditions for ingress controllers. 0 is False and 1 is True.
+            # TYPE ingress_controller_conditions gauge
+            ingress_controller_conditions{condition="Available",name="test1"} 0
+            ingress_controller_conditions{condition="Degraded",name="test1"} 1
+            `,
+		},
+
+		{
+			name:              "No metrics even if we are in Progressing status",
+			inputMetricValues: []metricValue{},
+			// update managed to set the conditions but didn't reach the place where the metrics are set (deletion came before)
+			inputIngress: testIngressControllerWithConditions("test1", []operatorv1.OperatorCondition{
+				{Type: "Progressing", Status: operatorv1.ConditionTrue},
+			}),
+			expectedMetricFormat: ``,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// cleanup the ingress condition metrics
+			ingressControllerConditions.Reset()
+
+			// fill the metric up with the input values
+			for _, val := range tc.inputMetricValues {
+				ingressControllerConditions.WithLabelValues(val.labels...).Set(val.value)
+			}
+
+			// check the testutil collected all the metrics
+			gotNumMetrics := testutil.CollectAndCount(ingressControllerConditions)
+			if gotNumMetrics != len(tc.inputMetricValues) {
+				t.Errorf("collected a different number of metrics before deletion: expected %d, got %d", len(tc.inputMetricValues), gotNumMetrics)
+				t.SkipNow()
+			}
+
+			SetIngressControllerConditionsMetric(tc.inputIngress)
+
+			// Check the remaining metrics.
+			err := testutil.CollectAndCompare(ingressControllerConditions, strings.NewReader(tc.expectedMetricFormat))
+			if err != nil {
+				t.Error(err)
+			}
+		})
+	}
+}
 func Test_SetIngressControllerNLBMetric(t *testing.T) {
 	testCases := []struct {
 		name                 string

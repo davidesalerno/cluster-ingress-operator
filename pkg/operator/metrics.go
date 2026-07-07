@@ -2,6 +2,7 @@ package operator
 
 import (
 	"context"
+	"crypto/tls"
 	"net/http"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -10,8 +11,10 @@ import (
 	ctrlruntimemetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
-// StartMetricsListener starts the metrics listener on addr.
-func StartMetricsListener(addr string, signal context.Context) {
+// StartMetricsListener starts the metrics listener on addr.  When certFile
+// and keyFile are non-empty the server uses TLS with the given tlsConfig;
+// otherwise it falls back to plain HTTP.
+func StartMetricsListener(addr, certFile, keyFile string, tlsConfig *tls.Config, signal context.Context) {
 	// These metrics get registered in controller-runtime's registry via an init in the internal/controller/metrics package.
 	// Unregister the controller-runtime metrics, so that we can combine the controller-runtime metric's registry
 	// with that of the ingress-operator. This shouldn't have any side effects, as long as no 2 metrics across
@@ -27,13 +30,26 @@ func StartMetricsListener(addr string, signal context.Context) {
 		promhttp.HandlerOpts{},
 	)
 
-	log.Info("starting metrics listener", "addr", addr)
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", handler)
 	s := http.Server{Addr: addr, Handler: mux}
 
+	useTLS := certFile != "" && keyFile != ""
+	if useTLS {
+		s.TLSConfig = tlsConfig
+		log.Info("starting metrics listener with TLS", "addr", addr)
+	} else {
+		log.Info("starting metrics listener", "addr", addr)
+	}
+
 	go func() {
-		if err := s.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		var err error
+		if useTLS {
+			err = s.ListenAndServeTLS(certFile, keyFile)
+		} else {
+			err = s.ListenAndServe()
+		}
+		if err != nil && err != http.ErrServerClosed {
 			log.Error(err, "metrics listener exited")
 		}
 	}()

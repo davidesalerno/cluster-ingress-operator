@@ -176,27 +176,20 @@ func start(opts *StartOptions) error {
 	}
 
 	// Build the TLS options for the metrics server from the
-	// cluster-wide TLS security profile when a cert directory is provided.
+	// cluster-wide TLS security profile when a cert directory is provided
+	// and tlsAdherence requires newly adhering components to honor it.
 	var metricsTLSOpts []func(*tls.Config)
 	if opts.MetricsCertDir != "" {
 		apiConfig := &configv1.APIServer{}
+		metricsLog := log.WithValues("resourceType", "APIServer", "name", "cluster")
 		if err := cl.Get(signal, types.NamespacedName{Name: "cluster"}, apiConfig); err != nil {
-			log.Info("failed to get APIServer 'cluster' for metrics TLS; falling back to intermediate profile", "error", err)
-		}
-		tlsProfileSpec := operatorcontroller.TLSProfileSpecForSecurityProfile(apiConfig.Spec.TLSSecurityProfile)
-		tlsCfg, err := operatorcontroller.TLSConfigFromProfile(
-			log.WithValues("resourceType", "APIServer", "name", "cluster"),
-			tlsProfileSpec,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to build TLS config for metrics: %v", err)
-		}
-		metricsTLSOpts = []func(*tls.Config){
-			func(c *tls.Config) {
-				c.CipherSuites = tlsCfg.CipherSuites
-				c.MinVersion = tlsCfg.MinVersion
-				c.CurvePreferences = tlsCfg.CurvePreferences
-			},
+			metricsLog.Info("failed to get APIServer 'cluster' for metrics TLS; using individual metrics TLS defaults", "error", err)
+		} else {
+			var err error
+			metricsTLSOpts, err = operatorcontroller.MetricsTLSOptsFromAPIServer(metricsLog, apiConfig)
+			if err != nil {
+				return fmt.Errorf("failed to build TLS config for metrics: %v", err)
+			}
 		}
 	}
 
